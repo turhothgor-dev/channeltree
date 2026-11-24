@@ -4,7 +4,7 @@
   "short_name": "ChannelTree",
   "version": "1.0.0",
   "description": "Organiza tus suscripciones de YouTube en grupos y subgrupos y filtra sus vídeos por grupo.",
-  "update_url" : "",
+  "update_url" : "https://github.com/turhothgor-dev/channeltree/tree/main/releases",
   "browser_specific_settings": {
     "gecko": {
       "id": "channeltree@turhothgor",
