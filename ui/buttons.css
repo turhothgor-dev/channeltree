@@ -1,0 +1,176 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Javier López Diego */
+
+/* Button styles */
+.primary-button {
+  color: #ffffff;
+  background: #065fd4;
+}
+
+.secondary-button {
+  color: #222;
+  background: #f2f2f2;
+}
+
+.noaction-button {
+  color: #eee;
+  background: #7e7e7e;
+}
+
+.action-button {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.mini-action-button {
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Hover con el color de acento (ADR 0040); --yg-accent lo escribe ui/accent.js. */
+.action-button:not(:disabled):hover,
+.mini-action-button:not(:disabled):hover,
+.primary-button:not(:disabled):hover,
+.secondary-button:not(:disabled):hover {
+  color: var(--yg-accent-text, #ffffff);
+  background: var(--yg-accent, #1a73e8);
+}
+
+/* Botón de icono común (ADR 0041). */
+.youtube-groups__icon-button {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: var(--yg-icon-button-size, 36px);
+  height: var(--yg-icon-button-size, 36px);
+  padding: 0;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  background: var(--yt-spec-badge-chip-background, #f2f2f2);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.youtube-groups__icon-button--small {
+  --yg-icon-button-size: 28px;
+}
+
+.youtube-groups__icon-button[hidden] {
+  display: none;
+}
+
+.youtube-groups__icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.youtube-groups__icon-button:not(:disabled):hover {
+  color: var(--yg-accent-text, #ffffff);
+  background: var(--yg-accent, #1a73e8);
+}
+
+.youtube-groups__icon-button:focus-visible {
+  outline: 2px solid #065fd4;
+  outline-offset: 2px;
+}
+
+html[dark] .youtube-groups__icon-button {
+  color: var(--yt-spec-text-primary, #f1f1f1);
+  background: var(--yt-spec-badge-chip-background, #272727);
+}
+
+html[dark] .youtube-groups__icon-button:focus-visible {
+  outline-color: #3ea6ff;
+}
+
+/* Botón de texto común del menú de opciones (ADR 0046). Sin margin: lo pone panel.css. */
+.youtube-groups__text-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: var(--yg-text-button-height, 36px);
+  padding: 0 var(--yg-text-button-padding, 12px);
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  background: var(--yt-spec-badge-chip-background, #f2f2f2);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--yg-text-button-font-size, 14px);
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.youtube-groups__text-button--small {
+  --yg-text-button-height: 28px;
+  --yg-text-button-padding: 8px;
+  --yg-text-button-font-size: 13px;
+}
+
+.youtube-groups__text-button[hidden] {
+  display: none;
+}
+
+.youtube-groups__text-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.youtube-groups__text-button:not(:disabled):hover {
+  color: var(--yg-accent-text, #ffffff);
+  background: var(--yg-accent, #1a73e8);
+}
+
+.youtube-groups__text-button:focus-visible {
+  outline: 2px solid #065fd4;
+  outline-offset: 2px;
+}
+
+html[dark] .youtube-groups__text-button {
+  color: var(--yt-spec-text-primary, #f1f1f1);
+  background: var(--yt-spec-badge-chip-background, #272727);
+}
+
+html[dark] .youtube-groups__text-button:focus-visible {
+  outline-color: #3ea6ff;
+}
+
+html[dark] .primary-button {
+  color: #8ab4f8;
+  background: #263850;
+}
+
+html[dark] .secondary-button {
+  color: #f1f1f1;
+  background: #3f3f3f;
+}
+
+html[dark] .noaction-button {
+  color: #eee;
+  background: #0e0e0e;
+}
+
+.mini-action-button {
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}

@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Javier López Diego */
+
+/* Pantalla completa: se oculta el panel y los desplegables flotantes.
+   Dos reglas: la primera cubre html o body en pantalla completa (`:has()` solo
+   mira descendientes); la segunda, cualquier otro elemento. Separadas para que,
+   si un navegador no entiende `:has()`, la primera siga valiendo. */
+:fullscreen #youtube-groups-menu,
+:fullscreen .youtube-groups__subscription-dropdown,
+:fullscreen .youtube-groups__playlist-dropdown,
+:fullscreen .youtube-groups__icon-picker,
+:fullscreen .youtube-groups__shorts-actions,
+:fullscreen #youtube-groups-toast {
+  display: none !important;
+}
+
+html:has(:fullscreen) #youtube-groups-menu,
+html:has(:fullscreen) .youtube-groups__subscription-dropdown,
+html:has(:fullscreen) .youtube-groups__playlist-dropdown,
+html:has(:fullscreen) .youtube-groups__icon-picker,
+html:has(:fullscreen) .youtube-groups__shorts-actions,
+html:has(:fullscreen) #youtube-groups-toast {
+  display: none !important;
+}

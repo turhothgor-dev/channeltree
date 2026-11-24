@@ -1,0 +1,45 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 Javier López Diego */
+
+/* Aviso flotante con "Deshacer" (ui/toast.js) */
+.youtube-groups__toast {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 420px;
+  padding: 10px 14px;
+  color: #0f0f0f;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 14px;
+}
+
+html[dark] .youtube-groups__toast {
+  color: #f1f1f1;
+  background: #212121;
+  border-color: #555;
+}
+
+.youtube-groups__toast[hidden] {
+  display: none;
+}
+
+.youtube-groups__toast-text {
+  overflow-wrap: anywhere;
+}
+
+.youtube-groups__toast-action {
+  flex: none;
+}
+
+/* Hover con el color de acento (ADR 0040). */
+.youtube-groups__toast-action:not(:disabled):hover {
+  color: var(--yg-accent-text, #ffffff);
+  background: var(--yg-accent, #1a73e8);
+}

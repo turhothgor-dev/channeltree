@@ -1,0 +1,5 @@
+# Prettier solo formatea el código de la extensión
+docs/
+web-ext-artifacts/
+package-lock.json
+*.md

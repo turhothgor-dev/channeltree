@@ -1,0 +1,19 @@
+# Secretos y entorno local
+.env
+.env.*
+!.env.example
+
+# Dependencias
+node_modules/
+
+# Salidas
+/web-ext-artifacts/
+/coverage/
+*.log
+
+# Editores y sistema
+*.swp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

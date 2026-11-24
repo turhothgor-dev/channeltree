@@ -1,0 +1,432 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Javier López Diego
+
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert");
+const { loadDom, manifestScripts } = require("./helpers/load-dom");
+const {
+  CHANNEL_URL,
+  makeGroup,
+  groupsStore,
+  GUIDE_HTML,
+  SUBSCRIPTION_CARD_HTML,
+  CHANNEL_RESULT_HTML,
+} = require("./helpers/youtube-fixtures");
+
+const CONTROL = ".youtube-groups__subscription-control";
+
+/**
+ * Pulsa el botón de la guía cuyo nombre empieza por `text`.
+ * @param {Document} document - Documento.
+ * @param {string} text - Principio del nombre.
+ */
+function clickGuideItem(document, text) {
+  const button = Array.from(
+    document.querySelectorAll(".youtube-groups__guide-item"),
+  ).find((item) => item.textContent.trim().startsWith(text));
+  assert.ok(button, `no hay botón de guía "${text}"`);
+  button.click();
+}
+
+/**
+ * Crea el componente de tarjetas solo, con un contexto mínimo.
+ * @param {Object} dom - Resultado de `loadDom`.
+ * @returns {Object} API del componente.
+ */
+function createCards(dom, stateOverrides = {}) {
+  const Cards = dom.global("YouTubeGroupsCards");
+  return Cards.create({
+    state: {
+      settings: dom.global("YouTubeGroupsSettings").DEFAULT_SETTINGS,
+      activeSelection: [],
+      activeSelectionUrls: null,
+      advancedFilters: { duration: "any", age: "any", views: "any" },
+      watchedVideos: null,
+      ...stateOverrides,
+    },
+    watched: {
+      applyWatchedToCard() {},
+      updateWatchedButton() {},
+      toggleVideoWatched() {},
+    },
+    dropdowns: {},
+  });
+}
+
+test("YouTubeGroupsCards.create no toca el DOM", () => {
+  const scripts = manifestScripts().filter((file) => file !== "content.js");
+  const dom = loadDom({ html: SUBSCRIPTION_CARD_HTML, scripts });
+  const before = dom.document.body.innerHTML;
+
+  assert.strictEqual(
+    typeof dom.global("YouTubeGroupsCards").create,
+    "function",
+  );
+  const cards = createCards(dom);
+
+  assert.strictEqual(dom.document.body.innerHTML, before);
+  assert.strictEqual(typeof cards.scanDocument, "function");
+  assert.strictEqual(typeof cards.resetDetectedCards, "function");
+});
+
+test("resetDetectedCards y scanDocument vuelven a procesar una tarjeta cuyo enlace de canal ha cambiado", async () => {
+  const scripts = manifestScripts().filter((file) => file !== "content.js");
+  const dom = loadDom({ html: SUBSCRIPTION_CARD_HTML, scripts });
+  const cards = createCards(dom);
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+
+  cards.scanDocument();
+  await dom.flush();
+  assert.strictEqual(card.dataset.youtubeGroupsChannelUrl, CHANNEL_URL);
+
+  // YouTube reutiliza la tarjeta para otro canal
+  card.querySelector("ytd-channel-name a").setAttribute("href", "/@otro");
+  cards.resetDetectedCards();
+  cards.scanDocument();
+  await dom.flush();
+  assert.strictEqual(
+    card.dataset.youtubeGroupsChannelUrl,
+    "https://www.youtube.com/@otro",
+  );
+});
+
+test("una tarjeta recibe un único control dentro de la miniatura", async () => {
+  const dom = loadDom({ html: SUBSCRIPTION_CARD_HTML });
+  await dom.flush();
+
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+  assert.strictEqual(card.querySelectorAll(CONTROL).length, 1);
+  const thumb = card.querySelector("ytd-thumbnail");
+  assert.ok(thumb.hasAttribute("data-youtube-groups-thumb-host"));
+  assert.ok(thumb.querySelector(CONTROL));
+
+  // Una mutación en la tarjeta la reprocesa sin duplicar el control
+  card.appendChild(dom.document.createElement("span"));
+  await dom.flush();
+  assert.strictEqual(card.querySelectorAll(CONTROL).length, 1);
+});
+
+for (const [nombre, store] of [
+  ["sin vistos", undefined],
+  [
+    "con el vídeo visto",
+    {
+      youtubeWatched: { version: 1, videos: { abc123DEF45: { watchedAt: 1 } } },
+    },
+  ],
+]) {
+  test(`una tarjeta con botones se estabiliza y reprocesarla no muta el DOM (${nombre})`, async () => {
+    const dom = loadDom({ html: SUBSCRIPTION_CARD_HTML, store });
+    await dom.flush();
+
+    const card = dom.document.querySelector("ytd-rich-item-renderer");
+    card.appendChild(dom.document.createElement("span"));
+    const observer = new dom.window.MutationObserver(() => {});
+    observer.observe(card, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+    });
+    observer.takeRecords();
+    await dom.flush();
+
+    assert.strictEqual(observer.takeRecords().length, 0);
+    observer.disconnect();
+  });
+}
+
+test('pulsar "Sin grupo" oculta la tarjeta del canal agrupado, deja la de otro y limpiar las muestra', async () => {
+  const dom = loadDom({
+    url: "https://www.youtube.com/feed/subscriptions",
+    html:
+      GUIDE_HTML +
+      SUBSCRIPTION_CARD_HTML +
+      SUBSCRIPTION_CARD_HTML.replace("/@canal", "/@otro"),
+    store: groupsStore([
+      makeGroup("A", { channels: [{ name: "Canal", url: CHANNEL_URL }] }),
+    ]),
+  });
+  await dom.flush();
+  const [grouped, other] = dom.document.querySelectorAll(
+    "ytd-rich-item-renderer",
+  );
+
+  clickGuideItem(dom.document, "Sin grupo");
+  await dom.flush();
+  assert.ok(grouped.classList.contains("youtube-groups--hidden"));
+  assert.ok(!other.classList.contains("youtube-groups--hidden"));
+
+  dom.document.querySelector(".youtube-groups__guide-clear").click();
+  await dom.flush();
+  assert.ok(!grouped.classList.contains("youtube-groups--hidden"));
+  assert.ok(!other.classList.contains("youtube-groups--hidden"));
+});
+
+test("seleccionar otro grupo oculta la tarjeta y limpiar la selección la muestra", async () => {
+  const dom = loadDom({
+    html: GUIDE_HTML + SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([
+      makeGroup("A", { channels: [{ name: "Canal", url: CHANNEL_URL }] }),
+      makeGroup("B"),
+    ]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+  assert.ok(!card.classList.contains("youtube-groups--hidden"));
+
+  clickGuideItem(dom.document, "B");
+  await dom.flush();
+  assert.ok(card.classList.contains("youtube-groups--hidden"));
+
+  dom.document.querySelector(".youtube-groups__guide-clear").click();
+  await dom.flush();
+  assert.ok(!card.classList.contains("youtube-groups--hidden"));
+});
+
+for (const [outsideMode, className] of [
+  ["dim", "youtube-groups--dimmed"],
+  ["hide", "youtube-groups--hidden"],
+]) {
+  test(`con "Sin grupo" (exclusión) la tarjeta de un canal agrupado queda ${outsideMode} y la de otro canal visible`, async () => {
+    const scripts = manifestScripts().filter((file) => file !== "content.js");
+    const dom = loadDom({
+      html:
+        SUBSCRIPTION_CARD_HTML +
+        SUBSCRIPTION_CARD_HTML.replace("/@canal", "/@otro"),
+      scripts,
+    });
+    const Settings = dom.global("YouTubeGroupsSettings");
+    const cards = createCards(dom, {
+      settings: { ...Settings.DEFAULT_SETTINGS, outsideMode },
+      activeSelection: ["ungrouped"],
+      activeSelectionUrls: new Set([CHANNEL_URL]),
+      activeSelectionExclude: true,
+    });
+
+    cards.scanDocument();
+    await dom.flush();
+    const [grouped, other] = dom.document.querySelectorAll(
+      "ytd-rich-item-renderer",
+    );
+    cards.filterAllDetectedCards();
+
+    assert.ok(grouped.classList.contains(className));
+    assert.ok(!other.classList.contains("youtube-groups--hidden"));
+    assert.ok(!other.classList.contains("youtube-groups--dimmed"));
+  });
+}
+
+const STRIPE_CLASS = "youtube-groups--group-stripe";
+const STRIPE_PROPERTY = "--yg-group-stripe";
+const CHANNEL = { name: "Canal", url: CHANNEL_URL };
+
+test("la tarjeta de un canal de un grupo con color recibe la línea de color", async () => {
+  const dom = loadDom({
+    html: SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([
+      makeGroup("A", { channels: [CHANNEL], color: "#2196F3" }),
+    ]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+
+  assert.ok(card.classList.contains(STRIPE_CLASS));
+  assert.strictEqual(
+    card.style.getPropertyValue(STRIPE_PROPERTY),
+    "linear-gradient(to right, #2196f3 0% 100%)",
+  );
+});
+
+test("un canal en dos grupos con colores distintos da dos segmentos", async () => {
+  const dom = loadDom({
+    html: SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([
+      makeGroup("A", { channels: [CHANNEL], color: "#2196f3" }),
+      makeGroup("B", { channels: [CHANNEL], color: "#f44336" }),
+    ]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+
+  assert.strictEqual(
+    card.style.getPropertyValue(STRIPE_PROPERTY),
+    "linear-gradient(to right, #2196f3 0% 50%, #f44336 50% 100%)",
+  );
+});
+
+test("un canal en un grupo sin color no recibe la línea", async () => {
+  const dom = loadDom({
+    html: SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([makeGroup("A", { channels: [CHANNEL] })]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+
+  assert.ok(!card.classList.contains(STRIPE_CLASS));
+  assert.strictEqual(card.style.getPropertyValue(STRIPE_PROPERTY), "");
+});
+
+test("fuera de suscripciones la tarjeta no recibe la línea", async () => {
+  const dom = loadDom({
+    url: "https://www.youtube.com/",
+    html: SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([
+      makeGroup("A", { channels: [CHANNEL], color: "#2196f3" }),
+    ]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+
+  assert.ok(!card.classList.contains(STRIPE_CLASS));
+  assert.strictEqual(card.style.getPropertyValue(STRIPE_PROPERTY), "");
+});
+
+test("reprocesar una tarjeta con línea no produce mutaciones de atributos", async () => {
+  const dom = loadDom({
+    html: SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([
+      makeGroup("A", { channels: [CHANNEL], color: "#2196f3" }),
+    ]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+  assert.ok(card.classList.contains(STRIPE_CLASS));
+
+  card.appendChild(dom.document.createElement("span"));
+  const observer = new dom.window.MutationObserver(() => {});
+  observer.observe(card, { attributes: true });
+  observer.takeRecords();
+  await dom.flush();
+
+  assert.strictEqual(observer.takeRecords().length, 0);
+  observer.disconnect();
+});
+
+test("cambiar el color del grupo actualiza la línea y los botones y el filtro siguen", async () => {
+  const dom = loadDom({
+    html: GUIDE_HTML + SUBSCRIPTION_CARD_HTML,
+    store: groupsStore([
+      makeGroup("A", { channels: [CHANNEL], color: "#2196f3" }),
+      makeGroup("B"),
+    ]),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+  assert.ok(card.querySelector(CONTROL));
+
+  await dom.browser.storage.local.set(
+    groupsStore([
+      makeGroup("A", { channels: [CHANNEL], color: "#4caf50" }),
+      makeGroup("B"),
+    ]),
+  );
+  await dom.flush();
+  assert.strictEqual(
+    card.style.getPropertyValue(STRIPE_PROPERTY),
+    "linear-gradient(to right, #4caf50 0% 100%)",
+  );
+  assert.ok(card.querySelector(CONTROL));
+
+  clickGuideItem(dom.document, "B");
+  await dom.flush();
+  assert.ok(card.classList.contains("youtube-groups--hidden"));
+});
+
+test("un resultado de canal en búsqueda recibe solo Añadir a grupo", async () => {
+  const dom = loadDom({
+    url: "https://www.youtube.com/results?search_query=canal",
+    html: CHANNEL_RESULT_HTML,
+  });
+  await dom.flush();
+
+  const result = dom.document.querySelector("ytd-channel-renderer");
+  const controls = result.querySelectorAll(CONTROL);
+  assert.strictEqual(controls.length, 1);
+  assert.strictEqual(controls[0].querySelectorAll("button").length, 1);
+  assert.strictEqual(
+    controls[0].querySelector("button").textContent,
+    "Añadir a grupo",
+  );
+});
+
+/**
+ * Almacenamiento con el canal de ejemplo oculto.
+ * @param {Object} [extra] - Claves adicionales.
+ * @returns {Object} Contenido de `store`.
+ */
+function hiddenStore(extra = {}) {
+  return {
+    youtubeHiddenChannels: {
+      version: 1,
+      channels: {
+        [CHANNEL_URL]: { name: "Canal", url: CHANNEL_URL, hiddenAt: 1 },
+      },
+    },
+    ...extra,
+  };
+}
+
+const HIDDEN_CLASS = "youtube-groups--hidden";
+const OTHER_CARD_HTML = SUBSCRIPTION_CARD_HTML.replace("/@canal", "/@otro");
+
+for (const [path, expected] of [
+  ["/", true],
+  ["/results?search_query=x", true],
+  ["/feed/subscriptions", false],
+]) {
+  test(`un canal oculto ${expected ? "oculta" : "no oculta"} sus tarjetas en ${path}`, async () => {
+    const dom = loadDom({
+      url: `https://www.youtube.com${path}`,
+      html: SUBSCRIPTION_CARD_HTML + OTHER_CARD_HTML,
+      store: hiddenStore({
+        youtubeSettings: { version: 1, settings: { outsideMode: "dim" } },
+      }),
+    });
+    await dom.flush();
+    const [hidden, other] = dom.document.querySelectorAll(
+      "ytd-rich-item-renderer",
+    );
+
+    assert.strictEqual(hidden.classList.contains(HIDDEN_CLASS), expected);
+    assert.ok(!other.classList.contains(HIDDEN_CLASS));
+  });
+}
+
+test("en /watch una recomendación sin enlace de canal cuyo nombre es el de un canal oculto queda oculta", async () => {
+  const lockup = (name) => `
+    <yt-lockup-view-model>
+      <a href="/watch?v=${"x".repeat(11)}">Vídeo</a>
+      <yt-content-metadata-view-model><div><span>${name}</span></div></yt-content-metadata-view-model>
+    </yt-lockup-view-model>`;
+  const dom = loadDom({
+    url: "https://www.youtube.com/watch?v=abc123DEF45",
+    html: lockup("Canal") + lockup("Otro canal"),
+    store: hiddenStore(),
+  });
+  await dom.flush();
+  const [hidden, other] = dom.document.querySelectorAll("yt-lockup-view-model");
+
+  assert.ok(hidden.classList.contains(HIDDEN_CLASS));
+  assert.ok(!other.classList.contains(HIDDEN_CLASS));
+});
+
+test("quitar el canal de los ocultos vuelve a mostrar la tarjeta sin recargar", async () => {
+  const dom = loadDom({
+    url: "https://www.youtube.com/",
+    html: SUBSCRIPTION_CARD_HTML,
+    store: hiddenStore(),
+  });
+  await dom.flush();
+  const card = dom.document.querySelector("ytd-rich-item-renderer");
+  assert.ok(card.classList.contains(HIDDEN_CLASS));
+
+  await dom.browser.storage.local.set({
+    youtubeHiddenChannels: { version: 1, channels: {} },
+  });
+  await dom.flush();
+
+  assert.ok(!card.classList.contains(HIDDEN_CLASS));
+});

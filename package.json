@@ -1,0 +1,12 @@
+{
+  "name": "channeltree",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Organiza canales de YouTube en grupos personalizados.",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "jsdom": "^31.0.1",
+    "prettier": "^3.10.1",
+    "web-ext": "^10.8.0"
+  }
+}

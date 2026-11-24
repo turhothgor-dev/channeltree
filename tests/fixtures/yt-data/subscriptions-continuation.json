@@ -1,0 +1,33 @@
+{
+  "onResponseReceivedActions": [
+    {
+      "appendContinuationItemsAction": {
+        "continuationItems": [
+          {
+            "videoRenderer": {
+              "videoId": "vidContinuacion1",
+              "publishedTimeText": { "simpleText": "1 month ago" },
+              "ownerText": {
+                "runs": [
+                  {
+                    "text": "Canal de Prueba Uno",
+                    "navigationEndpoint": {
+                      "browseEndpoint": { "canonicalBaseUrl": "/@canal-uno" }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "continuationItemRenderer": {
+              "continuationEndpoint": {
+                "continuationCommand": { "token": "TOKEN-FEED-3" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

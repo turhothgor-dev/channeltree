@@ -1,0 +1,106 @@
+{
+  "manifest_version": 3,
+  "name": "ChannelTree: YouTube Subscriptions & Groups",
+  "short_name": "ChannelTree",
+  "version": "1.0.0",
+  "description": "Organiza tus suscripciones de YouTube en grupos y subgrupos y filtra sus vídeos por grupo.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "channeltree@turhothgor",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+  "permissions": ["storage"],
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "scripts": [
+      "modules/storage.js",
+      "modules/undo.js",
+      "modules/fxemoji-data.js",
+      "modules/icons.js",
+      "modules/groups.js",
+      "modules/avatars.js",
+      "modules/hidden-channels.js",
+      "modules/watched.js",
+      "modules/settings.js",
+      "modules/playlists.js",
+      "modules/backup.js",
+      "modules/sync.js",
+      "background.js"
+    ]
+  },
+  "commands": {
+    "open-editor": {
+      "suggested_key": { "default": "Alt+Shift+G" },
+      "description": "Abrir el editor de grupos"
+    },
+    "clear-selection": {
+      "suggested_key": { "default": "Alt+Shift+X" },
+      "description": "Limpiar la selección de grupos de la pestaña"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.youtube.com/*"],
+      "css": [
+        "ui/panel.css",
+        "ui/cards.css",
+        "ui/dropdowns.css",
+        "ui/buttons.css",
+        "ui/icons.css",
+        "ui/icon-picker.css",
+        "ui/toast.css",
+        "ui/guide-section.css",
+        "ui/fullscreen.css"
+      ],
+      "js": [
+        "modules/storage.js",
+        "modules/undo.js",
+        "modules/fxemoji-data.js",
+        "modules/icons.js",
+        "modules/groups.js",
+        "modules/avatars.js",
+        "modules/subscriptions.js",
+        "modules/new-videos.js",
+        "modules/hidden-channels.js",
+        "modules/channel-activity.js",
+        "modules/unsubscribes.js",
+        "modules/yt-data.js",
+        "modules/background-refresh.js",
+        "modules/watched.js",
+        "modules/settings.js",
+        "modules/visibility.js",
+        "modules/metadata.js",
+        "modules/pages.js",
+        "modules/filter.js",
+        "modules/guide.js",
+        "modules/playlists.js",
+        "modules/backup.js",
+        "ui/icons-dom.js",
+        "ui/accent.js",
+        "ui/icon-picker.js",
+        "ui/toast.js",
+        "ui/avatars.js",
+        "ui/subscriptions.js",
+        "ui/new-videos.js",
+        "ui/channel-activity.js",
+        "ui/background-refresh.js",
+        "ui/dropdowns.js",
+        "ui/player.js",
+        "ui/watched.js",
+        "ui/cards.js",
+        "ui/guide-section.js",
+        "ui/settings-section.js",
+        "ui/shortcuts-section.js",
+        "ui/panel.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

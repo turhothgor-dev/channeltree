@@ -1,0 +1,60 @@
+{
+  "onResponseReceivedActions": [
+    {
+      "appendContinuationItemsAction": {
+        "continuationItems": [
+          {
+            "gridChannelRenderer": {
+              "title": { "simpleText": "Canal de Prueba Tres" },
+              "navigationEndpoint": {
+                "browseEndpoint": { "canonicalBaseUrl": "/@canal-tres" }
+              },
+              "descriptionSnippet": {
+                "runs": [{ "text": "Descripción " }, { "text": "de tres" }]
+              },
+              "thumbnail": {
+                "thumbnails": [
+                  {
+                    "url": "//yt3.ggpht.com/avatar-tres=s48-c-k-c0x00ffffff-no-rj"
+                  },
+                  {
+                    "url": "//yt3.ggpht.com/avatar-tres=s176-c-k-c0x00ffffff-no-rj"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "channelRenderer": {
+              "title": { "simpleText": "Canal de Prueba Uno" },
+              "navigationEndpoint": {
+                "browseEndpoint": { "canonicalBaseUrl": "/@canal-uno" }
+              }
+            }
+          },
+          {
+            "channelRenderer": {
+              "title": { "simpleText": "Canal de Prueba Cuatro" },
+              "navigationEndpoint": {
+                "browseEndpoint": { "browseId": "UCinventado0000000000004" }
+              },
+              "descriptionSnippet": { "simpleText": "Sin avatar" }
+            }
+          },
+          {
+            "continuationItemRenderer": {
+              "continuationEndpoint": {
+                "commandExecutorCommand": {
+                  "commands": [
+                    { "logCommand": {} },
+                    { "continuationCommand": { "token": "TOKEN-SIGUIENTE" } }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

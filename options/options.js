@@ -1,0 +1,2151 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Javier López Diego
+
+"use strict";
+
+/**
+ * Página de opciones: editor de grupos. Pinta el árbol y permite renombrar en
+ * línea, cambiar icono y color, crear grupos y subgrupos, subir, bajar, mover
+ * (selector y arrastrar y soltar) y eliminar con "Deshacer".
+ */
+(() => {
+  const errorEl = document.getElementById("options-error");
+  const summaryEl = document.getElementById("options-summary");
+  const treeEl = document.getElementById("options-tree");
+  const channelsEl = document.getElementById("options-channels");
+
+  /**
+   * Aplica el atributo `dark` en <html> según el tema del sistema.
+   * @param {boolean} isDark - Si el tema es oscuro.
+   * @returns {void}
+   */
+  function applyTheme(isDark) {
+    document.documentElement.toggleAttribute("dark", isDark);
+  }
+
+  /**
+   * Muestra u oculta el mensaje de error de la cabecera.
+   * @param {string} message - Texto del error; vacío lo oculta.
+   * @returns {void}
+   */
+  function showError(message) {
+    errorEl.textContent = message;
+    errorEl.hidden = !message;
+  }
+
+  /**
+   * Cuenta todos los grupos y subgrupos del árbol.
+   * @param {Array<Object>} groups - Árbol de grupos.
+   * @returns {number} Número total de nodos.
+   */
+  function countGroups(groups) {
+    return groups.reduce(
+      (total, group) =>
+        total +
+        1 +
+        (Array.isArray(group.subgroups) ? countGroups(group.subgroups) : 0),
+      0,
+    );
+  }
+
+  /** Ids de los nodos plegados (se conservan entre repintados). */
+  const collapsed = new Set();
+  /** Último árbol leído. */
+  let currentGroups = [];
+  /** Últimos avatares leídos (clave de canal → URL de imagen). */
+  let currentAvatars = {};
+  /** Últimas suscripciones conocidas leídas (clave de canal → datos). */
+  let currentSubscriptions = {};
+  /** Últimos canales ocultos leídos (clave de canal → datos). */
+  let currentHidden = {};
+  /** Última actividad de canales leída (`youtubeChannelActivity`). */
+  let currentActivity = { lastFeedAt: null, channels: {} };
+  /**
+   * Acceso seguro al `localStorage` de la página (leer la propiedad puede
+   * lanzar si el navegador lo bloquea).
+   * @returns {Storage} Almacén.
+   */
+  const getViewStorage = () => window.localStorage;
+  /** Preferencias de vista (tamaño de página y pestaña). */
+  const viewPrefs = YouTubeGroupsViewPrefs.loadViewPrefs(getViewStorage);
+  /** Canales por página de las tres listas. */
+  let pageSize = viewPrefs.pageSize;
+  /** Id del panel de la pestaña activa (se guarda en cada cambio). */
+  let currentTab = viewPrefs.tab;
+
+  /**
+   * Guarda las preferencias de vista (fallar no afecta a la página).
+   * @returns {void}
+   */
+  function saveView() {
+    YouTubeGroupsViewPrefs.saveViewPrefs(getViewStorage, {
+      pageSize,
+      tab: currentTab,
+    });
+  }
+
+  /** Selector único de tamaño de página de las tres listas de "Canales". */
+  const pageSizeSelect = document.getElementById("options-page-size");
+  for (const size of YouTubeGroupsViewPrefs.PAGE_SIZES) {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = String(size);
+    pageSizeSelect.append(option);
+  }
+  pageSizeSelect.value = String(pageSize);
+  pageSizeSelect.addEventListener("change", () => {
+    pageSize = Number(pageSizeSelect.value);
+    saveView();
+    renderUnclassified();
+    renderHidden();
+    renderInactive();
+  });
+
+  /** Lista "Canales sin grupo". */
+  const unclassified = YouTubeGroupsUnclassified.create(
+    document.getElementById("options-unclassified"),
+    {
+      showNotice: (message, onUndo, focusUndo) =>
+        showNotice(message, onUndo, focusUndo),
+      undoGroups: (undo) => undoGroups(undo),
+    },
+  );
+  /** Sección "Canales ocultos". */
+  const hiddenList = YouTubeGroupsHiddenList.create(
+    document.getElementById("options-hidden"),
+    {
+      showNotice: (message, onUndo, focusUndo) =>
+        showNotice(message, onUndo, focusUndo),
+    },
+  );
+  /** Sección "Canales inactivos". */
+  const inactiveList = YouTubeGroupsInactiveList.create(
+    document.getElementById("options-inactive"),
+    {
+      showNotice: (message, onUndo, focusUndo) =>
+        showNotice(message, onUndo, focusUndo),
+      undoGroups: (undo) => undoGroups(undo),
+    },
+  );
+  /** Sección "Copia de seguridad". */
+  YouTubeGroupsBackupSection.create(document.getElementById("copia"));
+  /** Sección "Sincronización". */
+  const syncSection = YouTubeGroupsSyncSection.create(
+    document.getElementById("sincronizacion"),
+    {
+      showNotice: (message) => showNotice(message),
+    },
+  );
+  /** Sección "Limpieza". */
+  const cleanupSection = YouTubeGroupsCleanupSection.create(
+    document.getElementById("limpieza"),
+    {
+      showNotice: (message, onUndo, focusUndo) =>
+        showNotice(message, onUndo, focusUndo),
+      undoGroups: (undo) => undoGroups(undo),
+    },
+  );
+  /**
+   * Edición en línea en curso (renombrar o crear), o `null`.
+   * @type {null|{kind: "rename"|"create", groupId: string|null,
+   *   parentId: string|null, value: string, error: string,
+   *   input: HTMLInputElement|null, errorEl: HTMLElement|null,
+   *   submitting: boolean}}
+   */
+  let editing = null;
+  /** Indica que el árbol se está repintando (los `blur` se ignoran). */
+  let rendering = false;
+
+  /**
+   * Busca un grupo por id en todo el árbol.
+   * @param {Array<Object>} groups - Árbol de grupos.
+   * @param {string} id - Id buscado.
+   * @returns {Object|null} Grupo o `null`.
+   */
+  function findGroup(groups, id) {
+    for (const group of groups) {
+      if (group.id === id) {
+        return group;
+      }
+      const found = findGroup(group.subgroups || [], id);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Muestra un error junto al campo de edición en línea.
+   * @param {string} message - Texto del error.
+   * @returns {void}
+   */
+  function setEditError(message) {
+    if (!editing) {
+      return;
+    }
+    editing.error = message;
+    if (editing.errorEl) {
+      editing.errorEl.textContent = message;
+      editing.errorEl.hidden = !message;
+    }
+  }
+
+  /**
+   * Cancela la edición en línea y devuelve el foco a la fila, si la hay.
+   * @returns {void}
+   */
+  function cancelEdit() {
+    const previous = editing;
+    editing = null;
+    renderTree(currentGroups);
+    if (previous && previous.groupId) {
+      focusRow(previous.groupId);
+    }
+  }
+
+  /**
+   * Guarda la edición en línea (renombrar o crear). Si el nombre no es válido
+   * o la escritura falla, el campo sigue abierto con el error.
+   * @returns {Promise<void>}
+   */
+  async function submitEdit() {
+    const current = editing;
+    if (!current || current.submitting) {
+      return;
+    }
+    const target =
+      current.kind === "rename"
+        ? findGroup(currentGroups, current.groupId)
+        : null;
+    if (current.kind === "rename" && !target) {
+      cancelEdit();
+      return;
+    }
+    const isSub =
+      current.kind === "rename"
+        ? target.type === "subgroup"
+        : current.parentId !== null;
+    const message = YouTubeGroups.validateGroupName(
+      current.value,
+      isSub ? "subgroup" : "group",
+    );
+    if (message) {
+      setEditError(message);
+      return;
+    }
+    current.submitting = true;
+    try {
+      if (current.kind === "rename") {
+        if (current.value.trim() !== target.name) {
+          await YouTubeGroups.renameGroup(current.groupId, current.value);
+        }
+      } else if (current.parentId === null) {
+        await YouTubeGroups.createGroup(current.value);
+      } else {
+        await YouTubeGroups.createSubGroup(current.parentId, current.value);
+      }
+      if (editing === current) {
+        editing = null;
+        renderTree(currentGroups);
+        if (current.groupId) {
+          focusRow(current.groupId);
+        }
+      }
+    } catch (error) {
+      setEditError(error.message || "No se pudo guardar.");
+    } finally {
+      current.submitting = false;
+    }
+  }
+
+  /**
+   * Abre la edición en línea.
+   * @param {"rename"|"create"} kind - Tipo de edición.
+   * @param {string|null} groupId - Grupo que se renombra.
+   * @param {string|null} parentId - Padre del grupo que se crea (`null` = primer nivel).
+   * @param {string} value - Texto inicial.
+   * @returns {void}
+   */
+  function startEdit(kind, groupId, parentId, value) {
+    editing = {
+      kind,
+      groupId,
+      parentId,
+      value,
+      error: "",
+      input: null,
+      errorEl: null,
+      submitting: false,
+    };
+    if (parentId) {
+      collapsed.delete(parentId);
+    }
+    renderTree(currentGroups);
+    if (editing && editing.input) {
+      editing.input.focus();
+      editing.input.select();
+    }
+  }
+
+  /**
+   * Crea el campo de edición en línea (Intro o perder el foco guardan,
+   * Escape cancela).
+   * @returns {HTMLElement} Contenedor con el campo y su error.
+   */
+  function buildEditor() {
+    const current = editing;
+    const wrapper = el("span", "options__editor");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "options__input";
+    input.value = current.value;
+    input.setAttribute(
+      "aria-label",
+      current.kind === "rename" ? "Nuevo nombre" : "Nombre del grupo nuevo",
+    );
+    const errorEl = el("span", "options__field-error", current.error);
+    errorEl.setAttribute("role", "alert");
+    errorEl.hidden = !current.error;
+    current.input = input;
+    current.errorEl = errorEl;
+
+    input.addEventListener("input", () => {
+      current.value = input.value;
+    });
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitEdit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelEdit();
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (!rendering && editing === current) {
+        submitEdit();
+      }
+    });
+    wrapper.append(input, errorEl);
+    return wrapper;
+  }
+
+  /**
+   * Crea un botón de acción de fila.
+   * @param {string} label - Texto visible y `aria-label`.
+   * @param {function(HTMLButtonElement): void} onClick - Acción.
+   * @returns {HTMLButtonElement} Botón.
+   */
+  function actionButton(label, onClick) {
+    const button = el("button", "options__action", label);
+    button.type = "button";
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", () => onClick(button));
+    return button;
+  }
+
+  /**
+   * Crea un botón de acción de fila que solo muestra un icono.
+   * @param {string} iconId - Id del icono de `UI_ICON_PATHS`.
+   * @param {string} label - Nombre accesible y `title`.
+   * @param {function(HTMLButtonElement): void} onClick - Acción.
+   * @returns {HTMLButtonElement} Botón.
+   */
+  function iconButton(iconId, label, onClick) {
+    const button = el(
+      "button",
+      "youtube-groups__icon-button youtube-groups__icon-button--small options__action--icon",
+    );
+    button.type = "button";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    const svg = YouTubeGroupsIconsDom.createUiIconSvg(iconId, 18);
+    if (svg) {
+      button.append(svg);
+    }
+    button.addEventListener("click", () => onClick(button));
+    return button;
+  }
+
+  /**
+   * Abre el selector de icono y color de un grupo.
+   * @param {Object} group - Grupo.
+   * @param {HTMLButtonElement} button - Botón al que se ancla el selector.
+   * @returns {void}
+   */
+  function editAppearance(group, button) {
+    YouTubeGroupsIconPicker.openIconPicker(
+      { iconId: group.icon || "", colorHex: group.color || "" },
+      button,
+      (choice) =>
+        YouTubeGroups.setGroupAppearance(
+          group.id,
+          choice.iconId,
+          choice.colorHex,
+        ),
+    );
+  }
+
+  /**
+   * Selector "Mover a…" abierto, o `null`.
+   * `value` es `null` si aún no se ha elegido destino y `""` para "Primer nivel".
+   * @type {null|{groupId: string, value: string|null}}
+   */
+  let moving = null;
+
+  /**
+   * Selector "Fusionar con…" abierto, o `null`.
+   * `value` es `""` mientras no se ha elegido destino.
+   * @type {null|{groupId: string, value: string}}
+   */
+  let merging = null;
+
+  /**
+   * Mueve un grupo a un lugar y deja el foco en su fila.
+   * @param {Object} group - Grupo a mover.
+   * @param {string|null} parentId - Nuevo padre (`null` = primer nivel).
+   * @param {number} index - Posición en la lista de destino.
+   * @returns {Promise<void>}
+   */
+  async function moveTo(group, parentId, index) {
+    try {
+      if (parentId) {
+        collapsed.delete(parentId);
+      }
+      await YouTubeGroupsEditor.moveGroupAndSave(group.id, parentId, index);
+      showError("");
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo mover.");
+    }
+    if (moving && moving.groupId === group.id) {
+      moving = null;
+    }
+    renderTree(currentGroups);
+    focusRow(group.id);
+  }
+
+  /**
+   * Sube o baja un grupo entre sus hermanos.
+   * @param {Object} group - Grupo a mover.
+   * @param {number} delta - `-1` sube, `1` baja.
+   * @returns {Promise<void>}
+   */
+  async function moveSibling(group, delta) {
+    const place = YouTubeGroupsEditor.getSiblingMove(
+      currentGroups,
+      group.id,
+      delta,
+    );
+    if (place) {
+      await moveTo(group, place.parentId, place.index);
+    }
+  }
+
+  /**
+   * Abre el selector "Mover a…" de un grupo.
+   * @param {Object} group - Grupo a mover.
+   * @returns {void}
+   */
+  function startMove(group) {
+    merging = null;
+    moving = { groupId: group.id, value: null };
+    renderTree(currentGroups);
+    const select = treeEl.querySelector(".options__move-select");
+    if (select) {
+      select.focus();
+    }
+  }
+
+  /**
+   * Cierra el selector "Mover a…" y devuelve el foco a la fila.
+   * @param {string} groupId - Grupo del selector.
+   * @returns {void}
+   */
+  function cancelMove(groupId) {
+    moving = null;
+    renderTree(currentGroups);
+    focusRow(groupId);
+  }
+
+  /**
+   * Crea el selector "Mover a…" con sus botones: lista los destinos válidos
+   * sangrados por nivel y conserva la elección en `moving` entre repintados.
+   * @param {Object} group - Grupo a mover.
+   * @returns {HTMLElement|null} Contenedor del selector, o `null` si el
+   *   destino elegido ya no existe (se cancela).
+   */
+  function buildMoveControl(group) {
+    const wrapper = el("span", "options__move");
+    const select = document.createElement("select");
+    select.className = "options__move-select";
+    select.setAttribute("aria-label", "Mover a");
+    const targets = YouTubeGroupsEditor.getMoveTargets(currentGroups, group.id);
+    let initial = "";
+    for (const target of targets) {
+      const option = document.createElement("option");
+      option.value = target.id === null ? "" : target.id;
+      option.textContent =
+        "  ".repeat(target.level) +
+        target.name +
+        (target.current ? " (actual)" : "");
+      select.append(option);
+      if (target.current) {
+        initial = option.value;
+      }
+    }
+    select.value = moving.value !== null ? moving.value : initial;
+    if (select.value !== (moving.value !== null ? moving.value : initial)) {
+      // El destino elegido ya no existe: se cancela el selector.
+      moving = null;
+      return null;
+    }
+    moving.value = select.value;
+    select.addEventListener("change", () => {
+      moving.value = select.value;
+    });
+    select.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelMove(group.id);
+      }
+    });
+    const confirm = actionButton("Mover", () => {
+      const parentId = select.value === "" ? null : select.value;
+      const target = parentId ? findGroup(currentGroups, parentId) : null;
+      const siblings = parentId
+        ? target
+          ? target.subgroups || []
+          : []
+        : currentGroups;
+      // Índice relativo a la lista de destino sin el grupo movido.
+      moveTo(
+        group,
+        parentId,
+        siblings.filter((item) => item.id !== group.id).length,
+      );
+    });
+    const cancel = actionButton("Cancelar", () => cancelMove(group.id));
+    wrapper.append(select, confirm, cancel);
+    return wrapper;
+  }
+
+  /** Aviso de borrado (`role="status"`), creado en el primer uso. */
+  let noticeEl = null;
+  /** Temporizador que oculta el aviso. */
+  let noticeTimer = null;
+
+  /**
+   * Oculta el aviso de borrado.
+   * @returns {void}
+   */
+  function hideNotice() {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+    if (noticeEl) {
+      noticeEl.replaceChildren();
+      noticeEl.hidden = true;
+    }
+  }
+
+  /**
+   * Muestra un aviso, con botón "Deshacer" opcional, durante 10 s.
+   * @param {string} message - Texto del aviso.
+   * @param {function(): void} [onUndo] - Acción de "Deshacer".
+   * @param {boolean} [focusUndo] - Si el foco pasa a "Deshacer".
+   * @returns {void}
+   */
+  function showNotice(message, onUndo, focusUndo) {
+    if (!noticeEl) {
+      noticeEl = el("div", "options__notice");
+      noticeEl.setAttribute("role", "status");
+      document.body.append(noticeEl);
+    }
+    hideNotice();
+    noticeEl.hidden = false;
+    noticeEl.append(el("span", "options__notice-text", message));
+    if (onUndo) {
+      const undo = el("button", "options__action", "Deshacer");
+      undo.type = "button";
+      undo.addEventListener("click", onUndo);
+      noticeEl.append(undo);
+      if (focusUndo) {
+        undo.focus();
+      }
+    }
+    noticeTimer = setTimeout(hideNotice, 10000);
+  }
+
+  /**
+   * Restaura el último grupo borrado.
+   * @param {Object} snapshot - Instantánea de `deleteGroupAndSnapshot`.
+   * @returns {Promise<void>}
+   */
+  async function undoDelete(snapshot) {
+    try {
+      const result = await YouTubeGroupsEditor.restoreGroupAndSave(snapshot);
+      showError("");
+      showNotice(
+        !result.restored
+          ? "Ya estaba restaurado"
+          : result.atRoot
+            ? "Restaurado en el primer nivel (su grupo padre ya no existe)"
+            : `Restaurado «${snapshot.group.name}»`,
+      );
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo restaurar.");
+    }
+  }
+
+  /**
+   * Elimina un grupo sin preguntar y avisa con la opción de deshacer.
+   * @param {Object} group - Grupo a eliminar.
+   * @returns {Promise<void>}
+   */
+  async function deleteGroup(group) {
+    try {
+      const { snapshot, summary } =
+        await YouTubeGroupsEditor.deleteGroupAndSnapshot(group.id);
+      showError("");
+      const parts = [];
+      if (summary && summary.subgroups > 0) {
+        parts.push(
+          summary.subgroups === 1
+            ? "1 subgrupo"
+            : `${summary.subgroups} subgrupos`,
+        );
+      }
+      if (summary && summary.channels > 0) {
+        parts.push(
+          summary.channels === 1 ? "1 canal" : `${summary.channels} canales`,
+        );
+      }
+      showNotice(
+        `Eliminado «${group.name}»${parts.length ? `, con ${parts.join(" y ")}` : ""}`,
+        () => undoDelete(snapshot),
+        true,
+      );
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo eliminar.");
+    }
+  }
+
+  /**
+   * Deshace una fusión o una ordenación y avisa del resultado; solo restaura
+   * si los grupos siguen como los dejó esa operación.
+   * @param {{before: Array<Object>, after: Array<Object>}} undo - Instantánea.
+   * @returns {Promise<void>}
+   */
+  async function undoGroups(undo) {
+    try {
+      const { status } = await YouTubeGroupsEditor.revertGroupsAndSave(undo);
+      showError("");
+      showNotice(
+        status === "restored"
+          ? "Deshecho"
+          : status === "already"
+            ? "Ya estaba deshecho"
+            : "No se puede deshacer: los grupos han cambiado desde entonces",
+      );
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo deshacer.");
+    }
+  }
+
+  /**
+   * Ejecuta una ordenación sin preguntar y avisa con "Deshacer".
+   * @param {function(): Promise<{changed: boolean, undo: Object|null}>} save -
+   *   Escritura de ordenar.
+   * @param {string} message - Aviso si cambia el orden.
+   * @returns {Promise<void>}
+   */
+  async function runSort(save, message) {
+    try {
+      const { changed, undo } = await save();
+      showError("");
+      if (changed) {
+        showNotice(message, () => undoGroups(undo), true);
+      }
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo ordenar.");
+    }
+  }
+
+  /**
+   * Abre el selector "Fusionar con…" de un grupo.
+   * @param {Object} group - Grupo origen.
+   * @returns {void}
+   */
+  function startMerge(group) {
+    moving = null;
+    merging = { groupId: group.id, value: "" };
+    renderTree(currentGroups);
+    const select = treeEl.querySelector(".options__merge-select");
+    if (select) {
+      select.focus();
+    }
+  }
+
+  /**
+   * Cierra el selector "Fusionar con…" y devuelve el foco a la fila.
+   * @param {string} groupId - Grupo del selector.
+   * @returns {void}
+   */
+  function cancelMerge(groupId) {
+    merging = null;
+    renderTree(currentGroups);
+    focusRow(groupId);
+  }
+
+  /**
+   * Compone el aviso de una fusión.
+   * @param {string} sourceName - Nombre del origen.
+   * @param {string} targetName - Nombre del destino.
+   * @param {{added: number, skipped: number, movedSubgroups: number}} result -
+   *   Resultado de la fusión.
+   * @returns {string} Texto del aviso.
+   */
+  function mergeMessage(sourceName, targetName, result) {
+    const parts = [];
+    if (result.added > 0) {
+      parts.push(
+        result.added === 1
+          ? "1 canal añadido"
+          : `${result.added} canales añadidos`,
+      );
+    }
+    if (result.skipped > 0) {
+      parts.push(
+        result.skipped === 1 ? "1 ya estaba" : `${result.skipped} ya estaban`,
+      );
+    }
+    if (result.movedSubgroups > 0) {
+      parts.push(
+        result.movedSubgroups === 1
+          ? "1 subgrupo movido"
+          : `${result.movedSubgroups} subgrupos movidos`,
+      );
+    }
+    return (
+      `Fusionado «${sourceName}» en «${targetName}»` +
+      (parts.length ? `: ${parts.join(", ")}` : "")
+    );
+  }
+
+  /** Hay una fusión en curso: un segundo clic en "Fusionar" se ignora. */
+  let mergeInFlight = false;
+
+  /**
+   * Funde un grupo en otro sin preguntar y avisa con "Deshacer".
+   * @param {Object} group - Grupo origen.
+   * @param {string} targetId - Id del grupo destino.
+   * @returns {Promise<void>}
+   */
+  async function mergeInto(group, targetId) {
+    if (mergeInFlight) {
+      return;
+    }
+    mergeInFlight = true;
+    try {
+      await doMerge(group, targetId);
+    } finally {
+      mergeInFlight = false;
+    }
+  }
+
+  /**
+   * Hace la fusión de `mergeInto` (separada para proteger el doble envío).
+   * @param {Object} group - Grupo origen.
+   * @param {string} targetId - Id del grupo destino.
+   * @returns {Promise<void>}
+   */
+  async function doMerge(group, targetId) {
+    const target = findGroup(currentGroups, targetId);
+    const targetName = target ? target.name : "";
+    // La escritura puede repintar antes de volver: se anota ahora.
+    const wasSelected = selectedId === group.id;
+    try {
+      const result = await YouTubeGroupsEditor.mergeGroupsAndSave(
+        group.id,
+        targetId,
+      );
+      showError("");
+      collapsed.delete(targetId);
+      if (wasSelected) {
+        selectedId = targetId;
+        selectedUrls.clear();
+        transfer = null;
+      }
+      merging = null;
+      renderTree(currentGroups);
+      focusRow(targetId);
+      showNotice(
+        mergeMessage(group.name, targetName, result),
+        () => undoGroups(result.undo),
+        true,
+      );
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo fusionar.");
+    }
+  }
+
+  /**
+   * Crea el selector "Fusionar con…" con sus botones: lista los destinos de
+   * `getMergeTargets` sangrados por nivel, "Fusionar" espera a que haya
+   * destino y Escape cancela (el estado vive en `merging`).
+   * @param {Object} group - Grupo origen.
+   * @returns {HTMLElement|null} Contenedor del selector, o `null` si el
+   *   destino elegido ya no existe (se cancela).
+   */
+  function buildMergeControl(group) {
+    const wrapper = el("span", "options__merge");
+    const select = document.createElement("select");
+    select.className = "options__merge-select";
+    select.setAttribute("aria-label", "Fusionar con");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Elige un grupo";
+    select.append(placeholder);
+    for (const target of YouTubeGroupsEditor.getMergeTargets(
+      currentGroups,
+      group.id,
+    )) {
+      const option = document.createElement("option");
+      option.value = target.id;
+      option.textContent = "  ".repeat(target.level) + target.name;
+      select.append(option);
+    }
+    select.value = merging.value;
+    if (select.value !== merging.value) {
+      // El destino elegido ya no existe: se vuelve a "Elige un grupo".
+      merging.value = "";
+      select.value = "";
+    }
+    const confirm = actionButton("Fusionar", () => {
+      if (select.value !== "") {
+        mergeInto(group, select.value);
+      }
+    });
+    confirm.disabled = select.value === "";
+    select.addEventListener("change", () => {
+      merging.value = select.value;
+      confirm.disabled = select.value === "";
+    });
+    select.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelMerge(group.id);
+      }
+    });
+    const cancel = actionButton("Cancelar", () => cancelMerge(group.id));
+    wrapper.append(select, confirm, cancel);
+    return wrapper;
+  }
+
+  /** Botón "Ordenar A-Z" de la cabecera (grupos de primer nivel). */
+  const sortRootEl = document.getElementById("options-sort-root");
+
+  /** Texto del buscador de Grupos (vacío = sin búsqueda). */
+  let groupsQuery = "";
+  /** Texto del buscador de Canales (vacío = sin búsqueda). */
+  let channelsQuery = "";
+  /**
+   * Resultado de la búsqueda sobre el último árbol, o `null` sin búsqueda.
+   * @type {null|{groupIds: string[], channelMatches: Object, visibleIds: string[]}}
+   */
+  let searchResult = null;
+
+  /** Id del grupo seleccionado (su lista de canales se ve en el panel), o `null`. */
+  let selectedId = null;
+  /** URL de los canales marcados en el panel. */
+  const selectedUrls = new Set();
+
+  /** Canales por página del panel (fijo, sin preferencia guardada). */
+  const CHANNELS_PAGE_SIZE = 20;
+  /** Región `role="status"` donde se anuncia el cambio de página. */
+  const channelsAnnounceEl = el("div", "options__visually-hidden", "");
+  channelsAnnounceEl.setAttribute("role", "status");
+  channelsEl.after(channelsAnnounceEl);
+  /** Paginación del panel de canales (marco mínimo, sin plegado). */
+  const channelsPaging = YouTubeGroupsPager.createListPaging(
+    {
+      body: channelsEl,
+      announce: (text) => {
+        channelsAnnounceEl.textContent = text;
+      },
+    },
+    { label: "canales del grupo", rerender: () => renderChannels() },
+  );
+
+  /**
+   * Marca en el árbol la fila del grupo seleccionado.
+   * @returns {void}
+   */
+  function markSelectedRow() {
+    for (const row of treeEl.querySelectorAll("[data-group-id]")) {
+      row.setAttribute(
+        "aria-selected",
+        String(row.dataset.groupId === selectedId),
+      );
+    }
+  }
+
+  /**
+   * Selecciona un grupo, vacía la selección de canales y repinta el panel.
+   * @param {string} groupId - Id del grupo.
+   * @returns {void}
+   */
+  function selectGroup(groupId) {
+    if (selectedId !== groupId) {
+      selectedId = groupId;
+      selectedUrls.clear();
+      transfer = null;
+      keywordDraft = null;
+    }
+    markSelectedRow();
+    renderChannels();
+  }
+
+  /**
+   * Restaura canales quitados de un grupo.
+   * @param {string} groupId - Id del grupo.
+   * @param {Array<{channel: Object, index: number}>} removed - Quitados.
+   * @returns {Promise<void>}
+   */
+  async function undoRemoveChannels(groupId, removed) {
+    try {
+      const result = await YouTubeGroupsEditor.restoreChannelsAndSave(
+        groupId,
+        removed,
+      );
+      showError("");
+      showNotice(
+        !result.restored
+          ? "Ya estaban restaurados"
+          : result.restored === 1
+            ? "Restaurado 1 canal"
+            : `Restaurados ${result.restored} canales`,
+      );
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo restaurar.");
+    }
+  }
+
+  /**
+   * Quita del grupo los canales marcados, sin preguntar, y avisa con "Deshacer".
+   * @param {Object} group - Grupo seleccionado.
+   * @returns {Promise<void>}
+   */
+  async function removeSelectedChannels(group) {
+    const urls = [...selectedUrls];
+    if (urls.length === 0) {
+      return;
+    }
+    try {
+      const { removed } = await YouTubeGroupsEditor.removeChannelsAndSave(
+        group.id,
+        urls,
+      );
+      selectedUrls.clear();
+      showError("");
+      if (removed.length > 0) {
+        showNotice(
+          removed.length === 1
+            ? `Quitado 1 canal de «${group.name}»`
+            : `Quitados ${removed.length} canales de «${group.name}»`,
+          () => undoRemoveChannels(group.id, removed),
+          true,
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo quitar.");
+    }
+  }
+
+  /**
+   * Selector de destino de "Copiar a…" / "Mover a…" abierto, o `null`.
+   * `value` es el id de destino elegido (`""` si aún no hay).
+   * @type {null|{mode: "copy"|"move", value: string}}
+   */
+  let transfer = null;
+
+  /**
+   * Abre el selector de destino para copiar o mover los canales marcados.
+   * @param {"copy"|"move"} mode - Copiar o mover.
+   * @returns {void}
+   */
+  function startTransfer(mode) {
+    transfer = { mode, value: "" };
+    renderChannels();
+    const select = channelsEl.querySelector(".options__transfer-select");
+    if (select) {
+      select.focus();
+    }
+  }
+
+  /**
+   * Copia o mueve los canales marcados al grupo elegido y avisa del resultado.
+   * @param {Object} group - Grupo de origen.
+   * @param {"copy"|"move"} mode - Copiar o mover.
+   * @param {string} toId - Id del grupo de destino.
+   * @returns {Promise<void>}
+   */
+  async function runTransfer(group, mode, toId) {
+    const urls = [...selectedUrls];
+    const target = findGroup(currentGroups, toId);
+    if (urls.length === 0 || !target) {
+      return;
+    }
+    try {
+      const { added, skipped } =
+        await YouTubeGroupsEditor.transferChannelsAndSave(
+          group.id,
+          urls,
+          toId,
+          mode,
+        );
+      transfer = null;
+      selectedUrls.clear();
+      showError("");
+      const done =
+        mode === "copy"
+          ? added === 1
+            ? "1 copiado"
+            : `${added} copiados`
+          : added === 1
+            ? "1 movido"
+            : `${added} movidos`;
+      const extra =
+        skipped === 0
+          ? ""
+          : skipped === 1
+            ? "; 1 ya estaba"
+            : `; ${skipped} ya estaban`;
+      showNotice(`${done} a «${target.name}»${extra}`);
+    } catch (error) {
+      console.error(error);
+      showError(error.message || "No se pudo copiar o mover.");
+    }
+  }
+
+  /**
+   * Crea el selector de destino con su botón de confirmar y de cancelar.
+   * @param {Object} group - Grupo de origen (se excluye del selector).
+   * @returns {HTMLElement} Contenedor del selector.
+   */
+  function buildTransferControl(group) {
+    const mode = transfer.mode;
+    const wrapper = el("span", "options__transfer");
+    const select = document.createElement("select");
+    select.className = "options__transfer-select";
+    select.setAttribute("aria-label", mode === "copy" ? "Copiar a" : "Mover a");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Elige un grupo";
+    select.append(placeholder);
+    for (const target of YouTubeGroups.flattenGroups(currentGroups)) {
+      if (target.id === group.id) {
+        continue;
+      }
+      const option = document.createElement("option");
+      option.value = target.id;
+      option.textContent = "  ".repeat(target.level) + target.name;
+      select.append(option);
+    }
+    select.value = transfer.value;
+    if (select.value !== transfer.value) {
+      // El destino elegido ya no existe.
+      transfer.value = "";
+      select.value = "";
+    }
+    const confirm = actionButton(mode === "copy" ? "Copiar" : "Mover", () =>
+      runBusy(() => runTransfer(group, mode, select.value)),
+    );
+    confirm.classList.add("options__transfer-confirm");
+    const updateConfirm = () => {
+      confirm.disabled = busy || select.value === "" || selectedUrls.size === 0;
+    };
+    select.dataset.focus = "transfer-select";
+    select.disabled = busy;
+    confirm.dataset.focus = "transfer-confirm";
+    select.addEventListener("change", () => {
+      transfer.value = select.value;
+      updateConfirm();
+    });
+    select.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        transfer = null;
+        renderChannels();
+      }
+    });
+    const cancel = actionButton("Cancelar", () => {
+      transfer = null;
+      renderChannels();
+    });
+    cancel.dataset.focus = "transfer-cancel";
+    cancel.disabled = busy;
+    updateConfirm();
+    wrapper.append(select, confirm, cancel);
+    return wrapper;
+  }
+
+  /**
+   * Clave del control del panel que tiene el foco (`data-focus` o, en las
+   * casillas de canal, `url:<url>`), o `null` si el foco no está en el panel.
+   * @returns {string|null} Clave del control enfocado.
+   */
+  function getChannelsFocusKey() {
+    const active = document.activeElement;
+    if (!active || !channelsEl.contains(active) || !active.dataset) {
+      return null;
+    }
+    if (active.dataset.url) {
+      return `url:${active.dataset.url}`;
+    }
+    return active.dataset.focus || null;
+  }
+
+  /**
+   * Devuelve el foco al control del panel que lo tenía, si sigue existiendo.
+   * @param {string|null} key - Clave de `getChannelsFocusKey`.
+   * @returns {void}
+   */
+  function restoreChannelsFocus(key) {
+    if (!key) {
+      return;
+    }
+    for (const node of channelsEl.querySelectorAll(
+      "[data-url], [data-focus]",
+    )) {
+      const nodeKey = node.dataset.url
+        ? `url:${node.dataset.url}`
+        : node.dataset.focus;
+      if (nodeKey === key && !node.disabled) {
+        node.focus();
+        return;
+      }
+    }
+  }
+
+  /** Si hay una escritura en curso desde el panel (desactiva sus acciones). */
+  let busy = false;
+
+  /**
+   * Ejecuta una escritura desde el panel con sus acciones desactivadas y, al
+   * terminar, repinta con los grupos ya guardados y devuelve el foco.
+   * @param {function(): Promise<void>} action - Escritura (gestiona sus errores).
+   * @returns {Promise<void>}
+   */
+  async function runBusy(action) {
+    if (busy) {
+      return;
+    }
+    const focusKey = getChannelsFocusKey();
+    busy = true;
+    renderChannels();
+    try {
+      await action();
+    } finally {
+      busy = false;
+      try {
+        renderTree(await YouTubeGroupsStorage.getGroups());
+      } catch (error) {
+        console.error(error);
+        renderChannels();
+      }
+      restoreChannelsFocus(focusKey);
+    }
+  }
+
+  /**
+   * Borrador del campo de palabras clave: se conserva al repintar mientras el
+   * grupo siga seleccionado.
+   * @type {{groupId: string, value: string, error: string|null}|null}
+   */
+  let keywordDraft = null;
+
+  /**
+   * Crea el editor de palabras clave del grupo seleccionado.
+   * @param {Object} group - Grupo seleccionado.
+   * @returns {HTMLElement} Bloque con campo, botón, ayuda y error.
+   */
+  function buildKeywordsEditor(group) {
+    if (keywordDraft && keywordDraft.groupId !== group.id) {
+      keywordDraft = null;
+    }
+    const saved = Array.isArray(group.keywords) ? group.keywords : [];
+    const savedText = saved.join(", ");
+    const wrapper = el("div", "options__keywords");
+    const label = el("label", "options__keywords-label", "Palabras clave");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "options-keywords";
+    input.dataset.focus = "keywords";
+    input.value = keywordDraft ? keywordDraft.value : savedText;
+    label.htmlFor = input.id;
+    const save = actionButton("Guardar palabras clave", () => submit());
+    save.dataset.focus = "keywords-save";
+    const help = el(
+      "p",
+      "options__keywords-help",
+      "Separadas por comas. En «Canales sin grupo» se sugerirá este " +
+        "grupo a los canales cuyo nombre contenga alguna como palabra " +
+        "completa, sin distinguir mayúsculas ni acentos.",
+    );
+    const errorEl = el(
+      "span",
+      "options__field-error",
+      keywordDraft && keywordDraft.error ? keywordDraft.error : "",
+    );
+    errorEl.setAttribute("role", "alert");
+    errorEl.hidden = !(keywordDraft && keywordDraft.error);
+
+    const updateSave = () => {
+      const parsed = YouTubeGroups.parseKeywordsInput(input.value);
+      const same =
+        !parsed.error &&
+        JSON.stringify(parsed.keywords) === JSON.stringify(saved);
+      save.disabled = busy || same;
+    };
+    const showFieldError = (message) => {
+      keywordDraft = { groupId: group.id, value: input.value, error: message };
+      errorEl.textContent = message || "";
+      errorEl.hidden = !message;
+    };
+    const submit = async () => {
+      if (busy) {
+        return;
+      }
+      const parsed = YouTubeGroups.parseKeywordsInput(input.value);
+      if (parsed.error) {
+        showFieldError(parsed.error);
+        return;
+      }
+      await runBusy(async () => {
+        try {
+          const result = await YouTubeGroups.setGroupKeywords(
+            group.id,
+            parsed.keywords,
+          );
+          keywordDraft = null;
+          if (result.changed) {
+            showNotice("Palabras clave guardadas");
+          }
+        } catch (error) {
+          console.error(error);
+          showFieldError("No se pudieron guardar las palabras clave.");
+        }
+      });
+    };
+    input.addEventListener("input", () => {
+      keywordDraft = { groupId: group.id, value: input.value, error: null };
+      errorEl.textContent = "";
+      errorEl.hidden = true;
+      updateSave();
+    });
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        keywordDraft = null;
+        input.value = savedText;
+        errorEl.textContent = "";
+        errorEl.hidden = true;
+        updateSave();
+      }
+    });
+    input.disabled = busy;
+    updateSave();
+    wrapper.append(label, input, save, help, errorEl);
+    return wrapper;
+  }
+
+  /**
+   * Repinta el panel de canales del grupo seleccionado, conservando las
+   * casillas marcadas que sigan existiendo y el foco en sus controles.
+   * @returns {void}
+   */
+  function renderChannels() {
+    const focusKey = getChannelsFocusKey();
+    const group = selectedId ? findGroup(currentGroups, selectedId) : null;
+    channelsEl.replaceChildren();
+    if (!group) {
+      selectedId = null;
+      selectedUrls.clear();
+      transfer = null;
+      channelsEl.append(
+        el(
+          "p",
+          "options__channels-summary",
+          "Elige un grupo o subgrupo para ver sus canales",
+        ),
+      );
+      return;
+    }
+    const allChannels = Array.isArray(group.channels) ? group.channels : [];
+    const matchUrls =
+      searchResult && searchResult.channelMatches[group.id]
+        ? new Set(searchResult.channelMatches[group.id])
+        : null;
+    const channels = matchUrls
+      ? allChannels.filter((channel) => matchUrls.has(channel.url))
+      : allChannels;
+    const existing = new Set(channels.map((channel) => channel.url));
+    for (const url of [...selectedUrls]) {
+      if (!existing.has(url)) {
+        selectedUrls.delete(url);
+      }
+    }
+
+    channelsEl.append(
+      el("h2", "options__channels-title", `Canales de «${group.name}»`),
+    );
+    const own = matchUrls
+      ? `${channels.length} de ${allChannels.length} canales`
+      : channels.length === 1
+        ? "1 canal"
+        : `${channels.length} canales`;
+    const summary = YouTubeGroupsEditor.summarizeSubtree(
+      currentGroups,
+      group.id,
+    );
+    const ownKeys = new Set(
+      allChannels.map((channel) => YouTubeGroups.getChannelKey(channel.url)),
+    );
+    const more = summary ? Math.max(0, summary.channels - ownKeys.size) : 0;
+    channelsEl.append(
+      el(
+        "p",
+        "options__channels-summary",
+        more > 0 ? `${own} · ${more} más en subgrupos` : own,
+      ),
+    );
+    channelsEl.append(buildKeywordsEditor(group));
+    // Se resuelve siempre (también sin canales) para que cambiar de grupo
+    // reinicie la página aunque el grupo intermedio esté vacío.
+    const pageInfo = channelsPaging.resolve({
+      total: channels.length,
+      pageSize: CHANNELS_PAGE_SIZE,
+      query: `${group.id}\n${groupsQuery}`,
+    });
+    if (channels.length === 0) {
+      channelsEl.append(
+        el(
+          "p",
+          "options__channels-summary",
+          "Este grupo no tiene canales propios",
+        ),
+      );
+      restoreChannelsFocus(focusKey);
+      return;
+    }
+
+    const bar = el("div", "options__channels-bar");
+    const allLabel = el("label", "options__select-all");
+    const allBox = document.createElement("input");
+    allBox.type = "checkbox";
+    allBox.dataset.focus = "select-all";
+    allLabel.append(allBox, " Seleccionar la página");
+    const removeButton = actionButton("Quitar", () =>
+      runBusy(() => removeSelectedChannels(group)),
+    );
+    removeButton.dataset.focus = "remove";
+    const copyButton = actionButton("Copiar a…", () => startTransfer("copy"));
+    copyButton.dataset.focus = "copy";
+    const moveButton = actionButton("Mover a…", () => startTransfer("move"));
+    moveButton.dataset.focus = "move";
+    bar.append(allLabel, removeButton, copyButton, moveButton);
+    if (!searchResult) {
+      const sortButton = actionButton("Ordenar A-Z", () =>
+        runBusy(() =>
+          runSort(
+            () => YouTubeGroupsEditor.sortChannelsAndSave(group.id),
+            `Ordenados los canales de «${group.name}»`,
+          ),
+        ),
+      );
+      sortButton.dataset.focus = "sort";
+      sortButton.disabled =
+        busy ||
+        YouTubeGroupsEditor.isSorted(currentGroups, group.id, "channels");
+      bar.append(sortButton);
+    }
+    if (transfer) {
+      bar.append(buildTransferControl(group));
+    }
+    channelsEl.append(bar);
+
+    const pageChannels = channels.slice(pageInfo.start, pageInfo.end);
+    const pagerControls = channelsPaging.controls();
+    if (pagerControls) {
+      channelsEl.append(pagerControls);
+    }
+
+    const list = el("ul", "options__channel-list");
+    const boxes = [];
+    const updateAll = () => {
+      const selectedOnPage = pageChannels.filter((channel) =>
+        selectedUrls.has(channel.url),
+      ).length;
+      allBox.checked =
+        pageChannels.length > 0 && selectedOnPage === pageChannels.length;
+      allBox.indeterminate =
+        selectedOnPage > 0 && selectedOnPage < pageChannels.length;
+      removeButton.textContent = `Quitar (${selectedUrls.size})`;
+      removeButton.setAttribute("aria-label", removeButton.textContent);
+      removeButton.disabled = busy || selectedUrls.size === 0;
+      copyButton.disabled = busy || selectedUrls.size === 0;
+      moveButton.disabled = busy || selectedUrls.size === 0;
+      const confirmButton = bar.querySelector(".options__transfer-confirm");
+      if (confirmButton) {
+        confirmButton.disabled =
+          busy ||
+          selectedUrls.size === 0 ||
+          !bar.querySelector(".options__transfer-select").value;
+      }
+    };
+    for (const channel of pageChannels) {
+      const item = el("li", "options__channel");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.url = channel.url;
+      box.checked = selectedUrls.has(channel.url);
+      box.setAttribute("aria-label", `Seleccionar ${channel.name}`);
+      box.addEventListener("change", () => {
+        if (box.checked) {
+          selectedUrls.add(channel.url);
+        } else {
+          selectedUrls.delete(channel.url);
+        }
+        updateAll();
+      });
+      boxes.push(box);
+      const text = el("span", "options__channel-text");
+      const link = el(
+        "a",
+        "options__channel-link",
+        channel.name || channel.url,
+      );
+      link.href = channel.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      text.append(link, el("span", "options__channel-url", channel.url));
+      const avatar = YouTubeGroupsIconsDom.createChannelAvatar(
+        channel.name || channel.url,
+        YouTubeGroupsAvatars.getAvatarFor(currentAvatars, channel.url),
+        YouTubeGroupsIconsDom.AVATAR_SIZES.editor,
+      );
+      item.append(box, avatar, text);
+      const description = YouTubeGroupsPager.describe(
+        currentSubscriptions,
+        YouTubeGroups.getChannelKey(channel.url),
+      );
+      if (description) {
+        item.append(description);
+      }
+      list.append(item);
+    }
+    allBox.addEventListener("change", () => {
+      for (const channel of pageChannels) {
+        if (allBox.checked) {
+          selectedUrls.add(channel.url);
+        } else {
+          selectedUrls.delete(channel.url);
+        }
+      }
+      for (const box of boxes) {
+        box.checked = allBox.checked;
+      }
+      updateAll();
+    });
+    updateAll();
+    channelsEl.append(list);
+    restoreChannelsFocus(focusKey);
+    channelsPaging.restoreFocus(pageInfo.focusKey);
+  }
+
+  /** Id del grupo que se arrastra, o `null`. */
+  let draggingId = null;
+  const DROP_CLASSES = [
+    "options__row--drop-before",
+    "options__row--drop-after",
+    "options__row--drop-inside",
+  ];
+
+  /**
+   * Quita el indicador de posición de todas las filas.
+   * @returns {void}
+   */
+  function clearDropIndicator() {
+    for (const row of treeEl.querySelectorAll(".options__row")) {
+      row.classList.remove(...DROP_CLASSES);
+    }
+  }
+
+  /**
+   * Muestra el indicador de posición en una fila.
+   * @param {HTMLElement} row - Fila destino.
+   * @param {"before"|"after"|"inside"} zone - Zona de suelta.
+   * @returns {void}
+   */
+  function showDropIndicator(row, zone) {
+    clearDropIndicator();
+    row.classList.add(`options__row--drop-${zone}`);
+  }
+
+  /**
+   * Calcula el lugar de suelta sobre una fila: cuarto superior = antes,
+   * inferior = después, centro = dentro.
+   * @param {HTMLElement} row - Fila destino.
+   * @param {string} targetId - Id del grupo destino.
+   * @param {DragEvent} event - Evento de arrastre.
+   * @returns {null|{parentId: string|null, index: number, zone: string}}
+   *   Lugar válido o `null`.
+   */
+  function dropPlaceFor(row, targetId, event) {
+    const rect = row.getBoundingClientRect();
+    const ratio =
+      rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
+    const zone = ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside";
+    const place = YouTubeGroupsEditor.getDropPosition(
+      currentGroups,
+      draggingId,
+      targetId,
+      zone,
+    );
+    return place ? { ...place, zone } : null;
+  }
+
+  /**
+   * Crea la fila-campo para un grupo nuevo.
+   * @returns {HTMLLIElement} Nodo con el campo de edición.
+   */
+  function buildCreateNode() {
+    const item = document.createElement("li");
+    item.className = "options__node";
+    item.setAttribute("role", "none");
+    const row = el("div", "options__row");
+    row.append(buildEditor());
+    item.append(row);
+    return item;
+  }
+
+  /**
+   * Crea un elemento con clase y texto opcionales.
+   * @param {string} tag - Etiqueta.
+   * @param {string} className - Clase CSS.
+   * @param {string} [text] - Texto.
+   * @returns {HTMLElement} Elemento creado.
+   */
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    node.className = className;
+    if (text !== undefined) {
+      node.textContent = text;
+    }
+    return node;
+  }
+
+  /**
+   * Crea el elemento de lista de un grupo y, recursivamente, el de sus subgrupos.
+   * @param {Array<Object>} groups - Árbol completo.
+   * @param {Object} group - Grupo a pintar.
+   * @param {number} level - Nivel de anidación (1 = primer nivel).
+   * @returns {HTMLLIElement} Nodo del árbol.
+   */
+  function buildNode(groups, group, level) {
+    const searching = searchResult !== null;
+    const visible = searching ? new Set(searchResult.visibleIds) : null;
+    const children = (
+      Array.isArray(group.subgroups) ? group.subgroups : []
+    ).filter((child) => !visible || visible.has(child.id));
+    const isCollapsed =
+      !searching && children.length > 0 && collapsed.has(group.id);
+
+    const item = document.createElement("li");
+    item.className = "options__node";
+    item.setAttribute("role", "none");
+
+    const row = el("div", "options__row");
+    row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-level", String(level));
+    row.tabIndex = 0;
+    row.dataset.groupId = group.id;
+    row.setAttribute("aria-selected", String(group.id === selectedId));
+    if (children.length > 0) {
+      row.setAttribute("aria-expanded", String(!isCollapsed));
+    }
+
+    const handle = el("span", "options__handle", "⠿");
+    handle.setAttribute("aria-hidden", "true");
+    handle.title = "Arrastrar para mover";
+    handle.draggable = !editing && !searching;
+    handle.hidden = searching;
+    handle.addEventListener("dragstart", (event) => {
+      draggingId = group.id;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", group.id);
+      event.dataTransfer.setDragImage(row, 0, 0);
+    });
+    handle.addEventListener("dragend", () => {
+      draggingId = null;
+      clearDropIndicator();
+    });
+    row.addEventListener("dragover", (event) => {
+      const place = draggingId ? dropPlaceFor(row, group.id, event) : null;
+      if (!place) {
+        clearDropIndicator();
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      showDropIndicator(row, place.zone);
+    });
+    row.addEventListener("dragleave", (event) => {
+      if (!row.contains(event.relatedTarget)) {
+        row.classList.remove(...DROP_CLASSES);
+      }
+    });
+    row.addEventListener("drop", (event) => {
+      const place = draggingId ? dropPlaceFor(row, group.id, event) : null;
+      const dragged = draggingId ? findGroup(currentGroups, draggingId) : null;
+      draggingId = null;
+      clearDropIndicator();
+      if (!place || !dragged) {
+        return;
+      }
+      event.preventDefault();
+      moveTo(dragged, place.parentId, place.index);
+    });
+    row.append(handle);
+
+    const toggle = el(
+      "button",
+      "youtube-groups__icon-button youtube-groups__icon-button--small options__toggle",
+    );
+    toggle.type = "button";
+    if (searching) {
+      // Con búsqueda el árbol se muestra desplegado: no hay nada que plegar.
+      // Se deja el hueco vacío (como en los grupos sin hijos) para no desalinear.
+      toggle.disabled = true;
+      toggle.tabIndex = -1;
+      toggle.setAttribute("aria-hidden", "true");
+    } else if (children.length > 0) {
+      toggle.textContent = isCollapsed ? "▸" : "▾";
+      toggle.setAttribute("aria-label", isCollapsed ? "Desplegar" : "Plegar");
+      toggle.addEventListener("click", () => {
+        if (collapsed.has(group.id)) {
+          collapsed.delete(group.id);
+        } else {
+          collapsed.add(group.id);
+        }
+        renderTree(currentGroups);
+        focusRow(group.id);
+      });
+    } else {
+      toggle.disabled = true;
+      toggle.tabIndex = -1;
+      toggle.setAttribute("aria-hidden", "true");
+    }
+    row.append(toggle);
+
+    const appearance = YouTubeGroups.getGroupAppearance(groups, group.id);
+    if (appearance && appearance.icon) {
+      const svg = YouTubeGroupsIconsDom.createIconSvg(
+        appearance.icon,
+        YouTubeGroupsIconsDom.GROUP_ICON_SIZES.choice,
+      );
+      if (svg) {
+        const chip = el("span", "youtube-groups__icon");
+        chip.append(svg);
+        row.append(chip);
+      }
+    }
+    YouTubeGroupsIconsDom.setGroupBand(row, appearance ? appearance.color : "");
+
+    const isRenaming =
+      editing && editing.kind === "rename" && editing.groupId === group.id;
+    if (isRenaming) {
+      row.append(buildEditor());
+    } else {
+      const name = el("span", "options__name", group.name);
+      name.title = group.name;
+      name.addEventListener("click", () => selectGroup(group.id));
+      name.addEventListener("dblclick", () =>
+        startEdit("rename", group.id, null, group.name),
+      );
+      row.append(name);
+    }
+    const count = Array.isArray(group.channels) ? group.channels.length : 0;
+    const matched =
+      searching && searchResult.channelMatches[group.id]
+        ? searchResult.channelMatches[group.id].length
+        : 0;
+    if (searching && searchResult.groupIds.includes(group.id)) {
+      row.classList.add("options__row--match");
+    }
+    row.append(
+      el(
+        "span",
+        "options__count",
+        (count === 1 ? "1 canal" : `${count} canales`) +
+          (matched > 0
+            ? ` · ${matched === 1 ? "1 canal" : `${matched} canales`}`
+            : ""),
+      ),
+    );
+    const actions = el("span", "options__actions");
+    actions.append(
+      iconButton("edit", "Renombrar", () =>
+        startEdit("rename", group.id, null, group.name),
+      ),
+      iconButton("palette", "Icono y color", (button) =>
+        editAppearance(group, button),
+      ),
+      iconButton("delete", "Eliminar", () => deleteGroup(group)),
+    );
+    if (!searching) {
+      actions.append(
+        iconButton("swap", "Mover a…", () => startMove(group)),
+        iconButton("merge", "Fusionar con…", () => startMerge(group)),
+      );
+      // Solo se pinta si ordenar cambia algo (2 o más subgrupos desordenados).
+      if (!YouTubeGroupsEditor.isSorted(groups, group.id, "subgroups")) {
+        actions.append(
+          iconButton("sort-az", "Ordenar subgrupos A-Z", () =>
+            runSort(
+              () => YouTubeGroupsEditor.sortSubgroupsAndSave(group.id),
+              `Ordenados los subgrupos de «${group.name}»`,
+            ),
+          ),
+        );
+      }
+    }
+    actions.append(
+      iconButton("add", "Añadir subgrupo", () =>
+        startEdit("create", null, group.id, ""),
+      ),
+    );
+    row.append(actions);
+    if (moving && moving.groupId === group.id) {
+      const control = buildMoveControl(group);
+      if (control) {
+        row.append(control);
+      }
+    }
+    if (merging && merging.groupId === group.id) {
+      const control = buildMergeControl(group);
+      if (control) {
+        row.append(control);
+      }
+    }
+    row.addEventListener("keydown", (event) => {
+      if (event.target !== row) {
+        return;
+      }
+      if (
+        event.altKey &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown")
+      ) {
+        if (searching) {
+          return;
+        }
+        event.preventDefault();
+        moveSibling(group, event.key === "ArrowUp" ? -1 : 1);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectGroup(group.id);
+      } else if (event.key === "F2") {
+        event.preventDefault();
+        startEdit("rename", group.id, null, group.name);
+      } else if (event.key === "Delete") {
+        event.preventDefault();
+        deleteGroup(group);
+      }
+    });
+    item.append(row);
+
+    const creatingHere =
+      editing && editing.kind === "create" && editing.parentId === group.id;
+    if ((children.length > 0 && !isCollapsed) || creatingHere) {
+      const list = el("ul", "options__children");
+      list.setAttribute("role", "group");
+      for (const child of children) {
+        list.append(buildNode(groups, child, level + 1));
+      }
+      if (creatingHere) {
+        list.append(buildCreateNode());
+      }
+      item.append(list);
+    }
+    return item;
+  }
+
+  /**
+   * Da el foco a la fila de un grupo, si existe.
+   * @param {string} groupId - Id del grupo.
+   * @returns {void}
+   */
+  function focusRow(groupId) {
+    for (const row of treeEl.querySelectorAll("[data-group-id]")) {
+      if (row.dataset.groupId === groupId) {
+        row.focus();
+        return;
+      }
+    }
+  }
+
+  /**
+   * Alterna dos fondos en las filas visibles del árbol según su orden en pantalla.
+   * @returns {void}
+   */
+  function stripeRows() {
+    treeEl.querySelectorAll(".options__row").forEach((row, index) => {
+      const odd = index % 2 === 0;
+      row.classList.toggle("options__row--odd", odd);
+      row.classList.toggle("options__row--even", !odd);
+    });
+  }
+
+  /**
+   * Repinta el árbol conservando la fila con el foco.
+   * @param {Array<Object>} groups - Árbol de grupos.
+   * @returns {void}
+   */
+  function renderTree(groups) {
+    currentGroups = groups;
+    const active = document.activeElement;
+    const inputFocused = Boolean(
+      editing && editing.input && active === editing.input,
+    );
+    const selection = inputFocused
+      ? [editing.input.selectionStart, editing.input.selectionEnd]
+      : null;
+    const selectFocused = Boolean(
+      active &&
+      active.classList &&
+      (active.classList.contains("options__move-select") ||
+        active.classList.contains("options__merge-select")),
+    );
+    const focusedId =
+      !inputFocused &&
+      !selectFocused &&
+      active &&
+      treeEl.contains(active) &&
+      active.closest("[data-group-id]")
+        ? active.closest("[data-group-id]").dataset.groupId
+        : null;
+    // Un repintado nuevo anula cualquier arrastre en curso.
+    draggingId = null;
+
+    searchResult = YouTubeGroupsEditor.searchGroups(groups, groupsQuery);
+    if (moving && (searchResult || !findGroup(groups, moving.groupId))) {
+      moving = null;
+    }
+    if (merging && (searchResult || !findGroup(groups, merging.groupId))) {
+      merging = null;
+    }
+    // Si el grupo que se renombra o al que se añade un subgrupo ya no existe, se cancela.
+    if (editing) {
+      const missingId =
+        editing.kind === "rename" ? editing.groupId : editing.parentId;
+      if (missingId && !findGroup(groups, missingId)) {
+        editing = null;
+      }
+    }
+
+    rendering = true;
+    treeEl.replaceChildren();
+    if (editing && editing.kind === "create" && editing.parentId === null) {
+      treeEl.append(buildCreateNode());
+    }
+    if (groups.length === 0) {
+      summaryEl.textContent = "Aún no hay grupos";
+    } else {
+      const total = countGroups(groups);
+      summaryEl.textContent = total === 1 ? "1 grupo" : `${total} grupos`;
+      if (searchResult && searchResult.visibleIds.length === 0) {
+        summaryEl.textContent = "Sin resultados";
+      }
+      const visible = searchResult ? new Set(searchResult.visibleIds) : null;
+      for (const group of groups) {
+        if (!visible || visible.has(group.id)) {
+          treeEl.append(buildNode(groups, group, 1));
+        }
+      }
+    }
+    rendering = false;
+    stripeRows();
+    sortRootEl.hidden =
+      Boolean(searchResult) ||
+      YouTubeGroupsEditor.isSorted(groups, null, "subgroups");
+    renderChannels();
+    renderUnclassified();
+    renderHidden();
+    renderInactive();
+    cleanupSection.setGroups(groups);
+    if (inputFocused && editing && editing.input) {
+      editing.input.focus();
+      editing.input.setSelectionRange(selection[0], selection[1]);
+    } else if (selectFocused && (moving || merging)) {
+      const select = treeEl.querySelector(
+        moving ? ".options__move-select" : ".options__merge-select",
+      );
+      if (select) {
+        select.focus();
+      }
+    } else if (focusedId) {
+      focusRow(focusedId);
+    } else if (active === sortRootEl && sortRootEl.hidden) {
+      // El botón de ordenar desaparece al ordenar: el foco pasa a "+ Grupo".
+      document.getElementById("options-add-group").focus();
+    }
+  }
+
+  /**
+   * Pinta la lista de canales sin grupo con el último estado leído.
+   * @returns {void}
+   */
+  function renderUnclassified() {
+    unclassified.render({
+      groups: currentGroups,
+      subscriptions: currentSubscriptions,
+      avatars: currentAvatars,
+      query: channelsQuery,
+      pageSize,
+    });
+  }
+
+  /**
+   * Pinta la sección de canales ocultos con el último estado leído.
+   * @returns {void}
+   */
+  function renderHidden() {
+    hiddenList.render({
+      hiddenChannels: currentHidden,
+      subscriptions: currentSubscriptions,
+      avatars: currentAvatars,
+      query: channelsQuery,
+      pageSize,
+    });
+  }
+
+  /**
+   * Pinta la sección de canales inactivos con el último estado leído.
+   * @returns {void}
+   */
+  function renderInactive() {
+    inactiveList.render({
+      groups: currentGroups,
+      subscriptions: currentSubscriptions,
+      activity: currentActivity,
+      avatars: currentAvatars,
+      query: channelsQuery,
+      pageSize,
+    });
+  }
+
+  /**
+   * Lee los grupos y pinta el árbol.
+   * @returns {Promise<void>}
+   */
+  async function render() {
+    try {
+      const [groups, avatars, subscriptions, hidden, activity] =
+        await Promise.all([
+          YouTubeGroupsStorage.getGroups(),
+          YouTubeGroupsStorage.getAvatars(),
+          YouTubeGroupsStorage.getSubscriptions(),
+          YouTubeGroupsStorage.getHiddenChannels(),
+          YouTubeGroupsStorage.getChannelActivity(),
+        ]);
+      currentAvatars = avatars;
+      currentSubscriptions = subscriptions;
+      currentActivity = activity;
+      currentHidden =
+        YouTubeGroupsHiddenChannels.normalizeHiddenChannels(hidden);
+      renderTree(groups);
+      showError("");
+    } catch (error) {
+      console.error(error);
+      showError("No se pudieron leer los grupos.");
+    }
+  }
+
+  YouTubeGroupsSettings.getSettings()
+    .then((settings) =>
+      YouTubeGroupsAccent.applyAccent(document, settings.accentColor),
+    )
+    .catch((error) => {
+      console.error("No se pudieron leer los ajustes", error);
+    });
+
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    const keys = YouTubeGroupsStorage.getChangedKeys(changes, areaName);
+    if (keys.includes("settings")) {
+      YouTubeGroupsAccent.applyAccent(
+        document,
+        YouTubeGroupsSettings.normalizeSettings(
+          YouTubeGroupsStorage.readSettingsValue(
+            changes[YouTubeGroupsStorage.KEYS.settings].newValue,
+          ),
+        ).accentColor,
+      );
+    }
+    if (keys.includes("avatars")) {
+      currentAvatars = YouTubeGroupsStorage.readAvatarsValue(
+        changes[YouTubeGroupsStorage.KEYS.avatars].newValue,
+      );
+      if (!keys.includes("groups")) {
+        renderChannels();
+        if (!keys.includes("subscriptions")) {
+          renderUnclassified();
+        }
+        if (
+          !keys.includes("hiddenChannels") &&
+          !keys.includes("subscriptions")
+        ) {
+          renderHidden();
+        }
+        if (
+          !keys.includes("subscriptions") &&
+          !keys.includes("channelActivity")
+        ) {
+          renderInactive();
+        }
+      }
+    }
+    if (keys.includes("channelActivity")) {
+      currentActivity = YouTubeGroupsStorage.readChannelActivityValue(
+        changes[YouTubeGroupsStorage.KEYS.channelActivity].newValue,
+      );
+      if (!keys.includes("groups") && !keys.includes("subscriptions")) {
+        renderInactive();
+      }
+    }
+    if (keys.includes("hiddenChannels")) {
+      currentHidden = YouTubeGroupsHiddenChannels.normalizeHiddenChannels(
+        YouTubeGroupsStorage.readHiddenChannelsValue(
+          changes[YouTubeGroupsStorage.KEYS.hiddenChannels].newValue,
+        ),
+      );
+      if (!keys.includes("groups")) {
+        renderHidden();
+      }
+    }
+    if (keys.includes("subscriptions")) {
+      currentSubscriptions = YouTubeGroupsStorage.readSubscriptionsValue(
+        changes[YouTubeGroupsStorage.KEYS.subscriptions].newValue,
+      );
+      if (!keys.includes("groups")) {
+        renderChannels();
+        renderUnclassified();
+        renderHidden();
+        renderInactive();
+      }
+    }
+    if (keys.includes("sync")) {
+      syncSection.applyStoredValue(
+        changes[YouTubeGroupsStorage.KEYS.sync].newValue,
+      );
+    }
+    if (keys.includes("groups")) {
+      renderTree(
+        YouTubeGroupsStorage.readGroupsValue(
+          changes[YouTubeGroupsStorage.KEYS.groups].newValue,
+        ),
+      );
+    }
+  });
+
+  // Si el arrastre termina fuera de una fila, se limpia el estado.
+  for (const type of ["dragend", "drop"]) {
+    document.addEventListener(type, () => {
+      draggingId = null;
+      clearDropIndicator();
+    });
+  }
+
+  /** Registra `input` y Escape de un buscador; `apply` recibe el texto nuevo. */
+  function bindSearch(input, apply) {
+    input.addEventListener("input", () => apply(input.value));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && input.value !== "") {
+        event.preventDefault();
+        input.value = "";
+        apply("");
+      }
+    });
+  }
+
+  bindSearch(document.getElementById("options-search-groups"), (value) => {
+    groupsQuery = value;
+    selectedUrls.clear();
+    transfer = null;
+    renderTree(currentGroups);
+  });
+  bindSearch(document.getElementById("options-search-channels"), (value) => {
+    channelsQuery = value;
+    renderUnclassified();
+    renderHidden();
+    renderInactive();
+  });
+
+  document.getElementById("options-add-group").addEventListener("click", () => {
+    startEdit("create", null, null, "");
+  });
+
+  sortRootEl.addEventListener("click", () => {
+    runSort(
+      () => YouTubeGroupsEditor.sortSubgroupsAndSave(null),
+      "Ordenados los grupos de primer nivel",
+    );
+  });
+
+  const tabsEl = document.querySelector(".options__tabs");
+  const resolved = YouTubeGroupsOptionsTabs.resolveInitialTab({
+    hash: window.location.hash,
+    saved: viewPrefs.tab,
+    ids: [...tabsEl.querySelectorAll('[role="tab"]')].map((tab) =>
+      tab.getAttribute("aria-controls"),
+    ),
+  });
+  YouTubeGroupsOptionsTabs.create(tabsEl, {
+    initial: resolved.tab,
+    section: resolved.section,
+    onChange: (id) => {
+      currentTab = id;
+      saveView();
+    },
+  });
+
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  applyTheme(darkQuery.matches);
+  darkQuery.addEventListener("change", (event) => applyTheme(event.matches));
+
+  // El primer desplazamiento a la sección de un alias ocurre antes de pintar y
+  // las listas cambian la altura: se repite cuando termina el primer render.
+  render().then(() => {
+    if (resolved.section) {
+      document
+        .getElementById(resolved.section)
+        ?.scrollIntoView?.({ block: "start" });
+    }
+  });
+  syncSection.load();
+})();

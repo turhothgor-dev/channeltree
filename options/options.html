@@ -1,0 +1,154 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Javier López Diego -->
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChannelTree · Opciones</title>
+    <link rel="stylesheet" href="/ui/buttons.css" />
+    <link rel="stylesheet" href="/ui/icons.css" />
+    <link rel="stylesheet" href="/ui/icon-picker.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <header class="options__header">
+      <h1>ChannelTree · Opciones</h1>
+      <p id="options-error" role="alert" hidden></p>
+    </header>
+    <div class="options__tabs" role="tablist" aria-label="Secciones">
+      <button
+        type="button"
+        role="tab"
+        id="options-tab-grupos"
+        aria-controls="grupos"
+        aria-selected="true"
+        tabindex="0"
+      >
+        Grupos
+      </button>
+      <button
+        type="button"
+        role="tab"
+        id="options-tab-canales"
+        aria-controls="canales"
+        aria-selected="false"
+        tabindex="-1"
+      >
+        Canales
+      </button>
+      <button
+        type="button"
+        role="tab"
+        id="options-tab-datos"
+        aria-controls="datos"
+        aria-selected="false"
+        tabindex="-1"
+      >
+        Datos
+      </button>
+    </div>
+    <main>
+      <section id="grupos" role="tabpanel" aria-labelledby="options-tab-grupos">
+        <div class="options__toolbar">
+          <button id="options-add-group" type="button">+ Grupo</button>
+          <button
+            id="options-sort-root"
+            type="button"
+            aria-label="Ordenar los grupos de primer nivel de la A a la Z"
+            title="Ordenar los grupos de primer nivel de la A a la Z"
+          >
+            Ordenar A-Z
+          </button>
+        </div>
+        <label class="options__search">
+          <span>Buscar grupos y canales</span>
+          <input id="options-search-groups" type="search" autocomplete="off" />
+        </label>
+        <div class="options__layout">
+          <section class="options__tree-pane">
+            <p id="options-summary"></p>
+            <ul id="options-tree" role="tree" aria-label="Grupos"></ul>
+          </section>
+          <section
+            id="options-channels"
+            class="options__channels"
+            aria-label="Canales del grupo"
+          ></section>
+        </div>
+      </section>
+      <section
+        id="canales"
+        role="tabpanel"
+        aria-labelledby="options-tab-canales"
+        tabindex="0"
+        hidden
+      >
+        <div class="options__toolbar">
+          <label class="options__page-size">
+            Mostrar
+            <select
+              id="options-page-size"
+              aria-label="Canales por página"
+            ></select>
+            canales por página
+          </label>
+        </div>
+        <label class="options__search">
+          <span>Buscar canales</span>
+          <input
+            id="options-search-channels"
+            type="search"
+            autocomplete="off"
+          />
+        </label>
+        <section
+          id="options-unclassified"
+          class="options__unclassified"
+        ></section>
+        <section id="options-hidden" class="options__hidden"></section>
+        <section id="options-inactive" class="options__inactive"></section>
+      </section>
+      <section
+        id="datos"
+        role="tabpanel"
+        aria-labelledby="options-tab-datos"
+        tabindex="0"
+        hidden
+      >
+        <section id="copia" class="options__section"></section>
+        <section id="sincronizacion" class="options__section"></section>
+        <section id="limpieza" class="options__section"></section>
+      </section>
+    </main>
+    <script src="/modules/storage.js"></script>
+    <script src="/modules/undo.js"></script>
+    <script src="/modules/fxemoji-data.js"></script>
+    <script src="/modules/icons.js"></script>
+    <script src="/modules/groups.js"></script>
+    <script src="/modules/avatars.js"></script>
+    <script src="/modules/subscriptions.js"></script>
+    <script src="/modules/new-videos.js"></script>
+    <script src="/modules/hidden-channels.js"></script>
+    <script src="/modules/channel-activity.js"></script>
+    <script src="/modules/watched.js"></script>
+    <script src="/modules/settings.js"></script>
+    <script src="/modules/playlists.js"></script>
+    <script src="/modules/backup.js"></script>
+    <script src="/modules/group-editor.js"></script>
+    <script src="/modules/keyword-rules.js"></script>
+    <script src="/ui/icons-dom.js"></script>
+    <script src="/ui/accent.js"></script>
+    <script src="/ui/icon-picker.js"></script>
+    <script src="view-prefs.js"></script>
+    <script src="tabs.js"></script>
+    <script src="pager.js"></script>
+    <script src="unclassified.js"></script>
+    <script src="hidden-channels.js"></script>
+    <script src="inactive-channels.js"></script>
+    <script src="backup-section.js"></script>
+    <script src="sync-section.js"></script>
+    <script src="cleanup-section.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>
